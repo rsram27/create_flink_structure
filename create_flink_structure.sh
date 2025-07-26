@@ -1,141 +1,203 @@
 #!/bin/bash
 
-# Script para criar a estrutura completa (diretórios e arquivos) para o projeto Flink.
+# --- Variáveis de Configuração ---
+FLINK_PROJECT_DIR="/home/ramires/flink-project"
+PG_JDBC_URL="https://jdbc.postgresql.org/download/postgresql-42.7.3.jar" # URL do driver JDBC PostgreSQL
+FLINK_VERSION="1.18" # Versão do Flink a ser utilizada
+PG_DB_URL="jdbc:postgresql://ep-withered-union-a8byi1q8-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
+PG_USERNAME="neondb_owner"
+PG_PASSWORD="npg_DlAO1qkuUn7j"
 
-# 1. Define o caminho base do projeto, conforme solicitado originalmente.
-FLINK_PROJECT_PATH="/home/ramires/flink-project"
+# --- 1. Criação da Estrutura de Diretórios ---
+echo "1. Criando a estrutura de diretórios em $FLINK_PROJECT_DIR..."
+mkdir -p "${FLINK_PROJECT_DIR}/"{libs,drivers,config,jobs}
+if [ $? -eq 0 ]; then
+    echo "   Estrutura de diretórios criada com sucesso."
+else
+    echo "   Erro ao criar a estrutura de diretórios. Verifique as permissões ou o caminho."
+    exit 1
+fi
 
-# 2. Informa ao usuário o que será feito
-echo "-----------------------------------------------------"
-echo "Criando a estrutura completa do projeto em: $FLINK_PROJECT_PATH"
-echo "-----------------------------------------------------"
+# --- 2. Configuração das Permissões ---
+echo "2. Definindo permissões de escrita para os diretórios do projeto..."
+sudo chmod -R 777 "$FLINK_PROJECT_DIR"
+if [ $? -eq 0 ]; then
+    echo "   Permissões configuradas com sucesso."
+else
+    echo "   Erro ao definir permissões. Certifique-se de ter permissões de sudo."
+    exit 1
+fi
 
-# 3. Cria a estrutura de diretórios
-echo "[1/4] Criando diretórios: libs, drivers, config, jobs..."
-mkdir -p "$FLINK_PROJECT_PATH"/{libs,drivers,config,jobs}
-echo "Diretórios criados."
-echo ""
+# --- 3. Baixar o Driver JDBC do PostgreSQL ---
+echo "3. Baixando o driver JDBC do PostgreSQL..."
+wget -q -O "${FLINK_PROJECT_DIR}/drivers/postgresql.jar" "$PG_JDBC_URL"
+if [ $? -eq 0 ]; then
+    echo "   Driver JDBC baixado e copiado para ${FLINK_PROJECT_DIR}/drivers/postgresql.jar"
+else
+    echo "   Erro ao baixar o driver JDBC. Verifique a URL ou sua conexão com a internet."
+    exit 1
+fi
 
-# 4. Cria o arquivo docker-compose.yml com o conteúdo necessário
-echo "[2/4] Criando o arquivo docker-compose.yml..."
-cat <<EOF > "$FLINK_PROJECT_PATH/docker-compose.yml"
+# --- 4. Criar o arquivo docker-compose.yml ---
+echo "4. Criando o arquivo docker-compose.yml..."
+cat <<EOF > "${FLINK_PROJECT_DIR}/docker-compose.yml"
 services:
   jobmanager:
-    image: flink:1.18-scala_2.12-java11
-    container_name: flink_jobmanager
+    image: apache/flink:${FLINK_VERSION}
+    hostname: jobmanager
     ports:
-      - "8081:8081" # UI do Flink
+      - "8081:8081"
     command: jobmanager
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1024m
+        taskmanager.memory.process.size: 1024m
+        taskmanager.numberOfTaskSlots: 1
     volumes:
+      - ./config:/opt/flink/conf
       - ./jobs:/opt/flink/jobs
-      - ./libs:/opt/flink/usrlib
+      - ./libs:/opt/flink/lib
       - ./drivers:/opt/flink/lib
-      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
-    networks:
-      - flink-network
 
   taskmanager:
-    image: flink:1.18-scala_2.12-java11
-    container_name: flink_taskmanager
-    command: taskmanager
+    image: apache/flink:${FLINK_VERSION}
+    hostname: taskmanager
     depends_on:
       - jobmanager
+    command: taskmanager
+    links:
+      - "jobmanager:jobmanager"
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 1024m
+        taskmanager.numberOfTaskSlots: 1
     volumes:
+      - ./config:/opt/flink/conf
       - ./jobs:/opt/flink/jobs
-      - ./libs:/opt/flink/usrlib
+      - ./libs:/opt/flink/lib
       - ./drivers:/opt/flink/lib
-      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
-    networks:
-      - flink-network
-
-networks:
-  flink-network:
-    driver: bridge
 EOF
-echo "docker-compose.yml criado."
-echo ""
+echo "   docker-compose.yml criado com sucesso em ${FLINK_PROJECT_DIR}/docker-compose.yml"
 
-# 5. Cria o arquivo do job SQL
-echo "[3/4] Criando o arquivo jobs/aggregate_weather.sql..."
-cat <<EOF > "$FLINK_PROJECT_PATH/jobs/aggregate_weather.sql"
--- #############################################################################
--- ## Tabela de Origem (Source): Leitura dos dados brutos do PostgreSQL
--- #############################################################################
-CREATE TABLE weather_data_source (
-    id SERIAL,
-    timestamp_utc3 TIMESTAMPTZ(3),
-    temperature_celsius DECIMAL(5, 2),
-    humidity INT,
-    WATERMARK FOR timestamp_utc3 AS timestamp_utc3 - INTERVAL '5' SECOND
-) WITH (
-    'connector' = 'jdbc',
-    'url' = 'jdbc:postgresql://ep-withered-union-a8byi1q8-pooler.eastus2.azure.neon.tech:5432/neondb?sslmode=require&channel_binding=require',
-    'table-name' = 'public.weather_data',
-    'username' = 'neondb_owner',
-    'password' = 'npg_DlAO1qkuUn7j',
-    'scan.partition.column' = 'id',
-    'scan.partition.num' = '1',
-    'scan.fetch-size' = '1000'
-);
+# --- 5. Criar o arquivo sql-client-defaults.yaml ---
+echo "5. Criando o arquivo sql-client-defaults.yaml..."
+cat <<EOF > "${FLINK_PROJECT_DIR}/config/sql-client-defaults.yaml"
+# /home/ramires/flink-project/config/sql-client-defaults.yaml
 
--- #############################################################################
--- ## Tabela de Destino (Sink): Onde os dados agregados serão salvos
--- #############################################################################
-CREATE TABLE weather_data_silver (
-    window_start TIMESTAMP(3),
-    window_end TIMESTAMP(3),
-    min_temp DECIMAL(5, 2),
-    max_temp DECIMAL(5, 2),
-    avg_temp DECIMAL(5, 2),
-    min_humidity INT,
-    max_humidity INT,
-    avg_humidity INT,
-    PRIMARY KEY (window_start) NOT ENFORCED
-) WITH (
-    'connector' = 'jdbc',
-    'url' = 'jdbc:postgresql://ep-withered-union-a8byi1q8-pooler.eastus2.azure.neon.tech:5432/neondb?sslmode=require&channel_binding=require',
-    'table-name' = 'public.weather_data_silver',
-    'username' = 'neondb_owner',
-    'password' = 'npg_DlAO1qkuUn7j'
-);
+execution:
+  current-database: default
+  planner: flink
+  type: streaming
+  max-idle-state-retention: 0
+  state.ttl-time: 0
+  checkpointing:
+    interval: 10s
+    mode: EXACTLY_ONCE
+tables:
+  - name: weather_data
+    type: source
+    connector:
+      type: jdbc
+      url: "${PG_DB_URL}"
+      table-name: weather_data
+      username: "${PG_USERNAME}"
+      password: "${PG_PASSWORD}"
+      driver: org.postgresql.Driver
+    format:
+      type: raw
+    schema:
+      - name: id
+        type: BIGINT
+      - name: timestamp_utc3
+        type: TIMESTAMP(3)
+      - name: temperature_celsius
+        type: DOUBLE
+      - name: humidity
+        type: INT
 
--- #############################################################################
--- ## Job de Agregação: Lê da origem, agrega e insere no destino
--- #############################################################################
+  - name: weather_data_silver
+    type: sink
+    connector:
+      type: jdbc
+      url: "${PG_DB_URL}"
+      table-name: weather_data_silver
+      username: "${PG_USERNAME}"
+      password: "${PG_PASSWORD}"
+      driver: org.postgresql.Driver
+    format:
+      type: raw
+    schema:
+      - name: hour_start
+        type: TIMESTAMP(3)
+      - name: min_temp
+        type: DOUBLE
+      - name: max_temp
+        type: DOUBLE
+      - name: avg_temp
+        type: DOUBLE
+      - name: min_humidity
+        type: INT
+      - name: max_humidity
+        type: INT
+      - name: avg_humidity
+        type: DOUBLE
+      - name: last_id
+        type: BIGINT
+EOF
+echo "   sql-client-defaults.yaml criado com sucesso em ${FLINK_PROJECT_DIR}/config/sql-client-defaults.yaml"
+
+# --- 6. Criar o script SQL do Flink Job ---
+echo "6. Criando o script SQL para o job Flink..."
+cat <<EOF > "${FLINK_PROJECT_DIR}/jobs/weather_data_processing.sql"
+-- /home/ramires/flink-project/jobs/weather_data_processing.sql
+
 INSERT INTO weather_data_silver
 SELECT
-    TUMBLE_START(timestamp_utc3, INTERVAL '1' HOUR) AS window_start,
-    TUMBLE_END(timestamp_utc3, INTERVAL '1' HOUR) AS window_end,
+    TUMBLE_START(timestamp_utc3, INTERVAL '1' HOUR) AS hour_start,
     MIN(temperature_celsius) AS min_temp,
     MAX(temperature_celsius) AS max_temp,
     AVG(temperature_celsius) AS avg_temp,
     MIN(humidity) AS min_humidity,
     MAX(humidity) AS max_humidity,
-    CAST(AVG(humidity) AS INT) AS avg_humidity
-FROM weather_data_source
+    AVG(humidity) AS avg_humidity,
+    MAX(id) AS last_id
+FROM weather_data
 GROUP BY TUMBLE(timestamp_utc3, INTERVAL '1' HOUR);
 EOF
-echo "jobs/aggregate_weather.sql criado."
-echo ""
+echo "   weather_data_processing.sql criado com sucesso em ${FLINK_PROJECT_DIR}/jobs/weather_data_processing.sql"
 
-# 6. Cria um arquivo de configuração vazio para o Flink (opcional, mas boa prática)
-echo "[4/4] Criando o arquivo de configuração config/flink-conf.yaml..."
-touch "$FLINK_PROJECT_PATH/config/flink-conf.yaml"
-echo "config/flink-conf.yaml criado."
-echo ""
+echo -e "\n--- Configuração Completa! ---"
+echo "Todos os arquivos necessários foram criados em ${FLINK_PROJECT_DIR}."
 
-# 7. Confirma a conclusão e lista a estrutura criada
-echo "-----------------------------------------------------"
-echo "Projeto Flink configurado com sucesso!"
-echo "-----------------------------------------------------"
-echo "Estrutura final:"
-ls -lR "$FLINK_PROJECT_PATH"
+echo -e "\n--- Próximos Passos ---"
+echo "1. Navegue até o diretório do projeto:"
+echo "   cd ${FLINK_PROJECT_DIR}"
+echo
+echo "2. Inicie os containers do Flink:"
+echo "   docker compose up -d"
+echo "   (Verifique a UI do Flink em http://localhost:8081 no seu navegador Windows)"
+echo
+echo "3. Para rodar o job SQL no Flink SQL Client:"
+echo "   docker exec -it jobmanager bash"
+echo "   ./bin/sql-client.sh -f /opt/flink/jobs/weather_data_processing.sql -defaults /opt/flink/conf/sql-client-defaults.yaml"
+echo "   (Após submeter o job, você pode sair do container digitando 'exit')"
+echo
+echo "4. Para parar os serviços:"
+echo "   docker compose down"
+echo
+echo "5. Para reiniciar os serviços:"
+echo "   docker compose restart"
+echo
+echo "6. Para limpar imagens e volumes (use com cautela, apaga dados):"
+echo "   docker compose down -v"
+echo "   docker rmi apache/flink:${FLINK_VERSION}"
+echo "   docker image prune -a"
+echo
+echo "7. Para adicionar novos drivers JDBC ou bibliotecas:"
+echo "   Copie os arquivos .jar para '${FLINK_PROJECT_DIR}/drivers/' ou '${FLINK_PROJECT_DIR}/libs/' e reinicie os containers."
+echo
+echo "Seu ambiente Flink está pronto para uso!"
