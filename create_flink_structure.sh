@@ -6,7 +6,7 @@ PG_JDBC_URL="https://jdbc.postgresql.org/download/postgresql-42.7.3.jar" # URL d
 FLINK_VERSION="1.18" # Versão do Flink a ser utilizada
 PG_DB_URL="jdbc:postgresql://ep-withered-union-a8byi1q8-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
 PG_USERNAME="neondb_owner"
-PG_PASSWORD="npg_DlAO1qkuUn7j"
+PG_PASSWORD="_______________"
 
 # --- 1. Criação da Estrutura de Diretórios ---
 echo "1. Criando a estrutura de diretórios em $FLINK_PROJECT_DIR..."
