@@ -20,7 +20,7 @@ fi
 
 # --- 2. Configuração das Permissões ---
 echo "2. Definindo permissões de escrita para os diretórios do projeto..."
-sudo chmod -R 777 "$FLINK_PROJECT_DIR"
+sudo chmod -R 775 "$FLINK_PROJECT_DIR"
 if [ $? -eq 0 ]; then
     echo "   Permissões configuradas com sucesso."
 else
@@ -32,7 +32,7 @@ fi
 echo "3. Baixando o driver JDBC do PostgreSQL..."
 wget -q -O "${FLINK_PROJECT_DIR}/drivers/postgresql.jar" "$PG_JDBC_URL"
 if [ $? -eq 0 ]; then
-    echo "   Driver JDBC baixado e copiado para ${FLINK_PROJECT_DIR}/drivers/postgresql.jar"
+    echo "   Driver JDBC baixado em ${FLINK_PROJECT_DIR}/drivers/postgresql.jar"
 else
     echo "   Erro ao baixar o driver JDBC. Verifique a URL ou sua conexão com a internet."
     exit 1
@@ -44,13 +44,15 @@ cat <<EOF > "${FLINK_PROJECT_DIR}/docker-compose.yml"
 services:
   jobmanager:
     image: apache/flink:${FLINK_VERSION}
+    container_name: flink-jobmanager
     hostname: jobmanager
     ports:
       - "8081:8081"
-    command: jobmanager
+    # Copia os JARs de drivers para /opt/flink/lib antes de iniciar
+    command: ["/bin/sh","-lc","cp -n /opt/flink/drivers/*.jar /opt/flink/lib/ 2>/dev/null || true; exec jobmanager"]
+    restart: unless-stopped
     environment:
-      - |
-        FLINK_PROPERTIES=
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
         jobmanager.memory.process.size: 1024m
         taskmanager.memory.process.size: 1024m
@@ -59,19 +61,19 @@ services:
       - ./config:/opt/flink/conf
       - ./jobs:/opt/flink/jobs
       - ./libs:/opt/flink/lib
-      - ./drivers:/opt/flink/lib
+      - ./drivers:/opt/flink/drivers
 
   taskmanager:
     image: apache/flink:${FLINK_VERSION}
+    container_name: flink-taskmanager
     hostname: taskmanager
     depends_on:
       - jobmanager
-    command: taskmanager
-    links:
-      - "jobmanager:jobmanager"
+    # Garante que os drivers também estejam no classpath do TaskManager
+    command: ["/bin/sh","-lc","cp -n /opt/flink/drivers/*.jar /opt/flink/lib/ 2>/dev/null || true; exec taskmanager"]
+    restart: unless-stopped
     environment:
-      - |
-        FLINK_PROPERTIES=
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
         taskmanager.memory.process.size: 1024m
         taskmanager.numberOfTaskSlots: 1
@@ -79,7 +81,7 @@ services:
       - ./config:/opt/flink/conf
       - ./jobs:/opt/flink/jobs
       - ./libs:/opt/flink/lib
-      - ./drivers:/opt/flink/lib
+      - ./drivers:/opt/flink/drivers
 EOF
 echo "   docker-compose.yml criado com sucesso em ${FLINK_PROJECT_DIR}/docker-compose.yml"
 
@@ -174,30 +176,13 @@ echo -e "\n--- Configuração Completa! ---"
 echo "Todos os arquivos necessários foram criados em ${FLINK_PROJECT_DIR}."
 
 echo -e "\n--- Próximos Passos ---"
-echo "1. Navegue até o diretório do projeto:"
-echo "   cd ${FLINK_PROJECT_DIR}"
-echo
-echo "2. Inicie os containers do Flink:"
-echo "   docker compose up -d"
-echo "   (Verifique a UI do Flink em http://localhost:8081 no seu navegador Windows)"
-echo
-echo "3. Para rodar o job SQL no Flink SQL Client:"
-echo "   docker exec -it jobmanager bash"
+echo "1. cd ${FLINK_PROJECT_DIR}"
+echo "2. docker compose up -d"
+echo "   (UI do Flink: http://localhost:8081)"
+echo "3. Para rodar o job no SQL Client:"
+echo "   docker exec -it flink-jobmanager bash"
 echo "   ./bin/sql-client.sh -f /opt/flink/jobs/weather_data_processing.sql -defaults /opt/flink/conf/sql-client-defaults.yaml"
-echo "   (Após submeter o job, você pode sair do container digitando 'exit')"
-echo
-echo "4. Para parar os serviços:"
-echo "   docker compose down"
-echo
-echo "5. Para reiniciar os serviços:"
-echo "   docker compose restart"
-echo
-echo "6. Para limpar imagens e volumes (use com cautela, apaga dados):"
-echo "   docker compose down -v"
-echo "   docker rmi apache/flink:${FLINK_VERSION}"
-echo "   docker image prune -a"
-echo
-echo "7. Para adicionar novos drivers JDBC ou bibliotecas:"
-echo "   Copie os arquivos .jar para '${FLINK_PROJECT_DIR}/drivers/' ou '${FLINK_PROJECT_DIR}/libs/' e reinicie os containers."
-echo
-echo "Seu ambiente Flink está pronto para uso!"
+echo "4. Parar: docker compose down"
+echo "5. Reiniciar: docker compose restart"
+echo "6. Limpeza (cautela): docker compose down -v && docker rmi apache/flink:${FLINK_VERSION} && docker image prune -a"
+echo "7. Novos JARs: copie para 'drivers/' ou 'libs/' e reinicie."
